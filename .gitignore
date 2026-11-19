@@ -1,7 +1,29 @@
+# PlatformIO
+.pio/
 build/
 *.hex
 *.elf
 *.o
+
+# editoare
 .vscode/
+.idea/
+*.code-workspace
+
+# sistem
 .DS_Store
 Thumbs.db
+desktop.ini
+~$*
+
+# note interne de montaj
+PINOUT.md
+
+# LaTeX
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fdb_latexmk
+*.fls

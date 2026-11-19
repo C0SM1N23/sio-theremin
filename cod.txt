@@ -1,0 +1,171 @@
+// Theremin SIO - versiunea 1, cu functiile si bibliotecile Arduino (Arduino UNO R4 WiFi)
+//
+// Mana stanga deasupra senzorului din stanga  -> frecventa (mana aproape = sunet inalt)
+// Mana dreapta deasupra senzorului din dreapta -> volum    (mana aproape = sunet tare)
+// Fara mana deasupra unui senzor, sunetul se opreste.
+// Pe LCD apar nota cea mai apropiata, frecventa, volumul si modul de redare.
+//
+// Biblioteci folosite:
+//   PwmOut            - semnal dreptunghiular cu frecventa si umplere reglabile, inclus in pachetul UNO R4
+//   Wire              - comunicatia I2C, inclusa in Arduino
+//   LiquidCrystal_I2C - comenzile pentru LCD prin modulul I2C
+//
+// Conexiuni: vezi CONEXIUNI.md
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <pwm.h>
+
+// ---------- Pini ----------
+const uint8_t TRIG_STANGA  = 4;
+const uint8_t ECHO_STANGA  = 2;
+const uint8_t TRIG_DREAPTA = 5;
+const uint8_t ECHO_DREAPTA = 3;
+const uint8_t PIN_BUZZER   = 11;
+// LCD-ul e pe SDA = A4, SCL = A5
+
+const uint8_t ADRESA_LCD = 0x27;  // sau 0x3F, vezi ce gaseste test_lcd
+
+// ---------- Domenii de lucru ----------
+const float D_MIN = 5.0;     // cm, mana mai aproape de atat = frecventa maxima / volum maxim
+const float D_MAX = 50.0;    // cm, mana mai departe de atat = nu se mai canta
+const float F_MIN = 261.63;  // Hz, nota C4
+const float OCTAVE = 2.0;    // intinderea instrumentului: C4 .. C6
+
+const unsigned long TIMEOUT_US = 25000;  // fara ecou in 25 ms = nicio mana deasupra senzorului
+
+// Modul de redare: false = frecventa continua, true = doar notele gamei cromatice.
+// Deocamdata e fix, mai tarziu il schimbam din encoder.
+bool modNote = false;
+
+// Frecventa cea mai joasa folosita; la pornire timerul buzzerului isi alege viteza astfel incat sa o poata genera
+const float F_REFERINTA = 200.0;
+
+const char *NUME_NOTE[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+
+PwmOut buzzer(PIN_BUZZER);
+LiquidCrystal_I2C lcd(ADRESA_LCD, 16, 2);
+
+float ceasTimer;  // cati pasi face timerul buzzerului intr-o secunda
+float dStangaFiltrat = -1;
+unsigned long ultimaAfisare = 0;
+
+// Impuls de 10 us pe TRIG, apoi masoara cat sta ECHO pe HIGH. Returneaza cm sau -1 fara ecou.
+float citesteDistanta(uint8_t trig, uint8_t echo) {
+  digitalWrite(trig, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trig, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trig, LOW);
+
+  unsigned long durata = pulseIn(echo, HIGH, TIMEOUT_US);
+  if (durata == 0) return -1;
+  return durata / 58.0;  // dus-intors cu 0.0343 cm/us
+}
+
+// Distanta -> frecventa. Fiecare centimetru urca acelasi numar de semitonuri,
+// asa ca frecventa creste exponential: f = F_MIN * 2^(octave parcurse).
+float distantaInFrecventa(float d) {
+  d = constrain(d, D_MIN, D_MAX);
+  return F_MIN * powf(2.0, OCTAVE * (D_MAX - d) / (D_MAX - D_MIN));
+}
+
+// Distanta -> volum in procente, in pasi de 5%
+int distantaInVolum(float d) {
+  if (d < 0 || d > D_MAX) return 0;
+  d = constrain(d, D_MIN, D_MAX);
+  int volum = 100 * (D_MAX - d) / (D_MAX - D_MIN);
+  return volum / 5 * 5;
+}
+
+// Numarul notei MIDI cea mai apropiata de frecventa f (A4 = 440 Hz = nota 69)
+int notaMidi(float f) {
+  return lroundf(69 + 12 * log2f(f / 440.0));
+}
+
+float frecventaNotei(int midi) {
+  return 440.0 * powf(2.0, (midi - 69) / 12.0);
+}
+
+// Buzzerul primeste un semnal dreptunghiular: frecventa da nota, factorul de umplere da volumul
+// (50% = cel mai tare, 0% = liniste). Perioada se da in pasi ai timerului, ca timerul sa nu
+// se reporneasca la fiecare schimbare de frecventa si sunetul sa nu pocneasca.
+void canta(float f, int volum) {
+  uint32_t perioada = ceasTimer / f;
+  buzzer.period_raw(perioada);
+  buzzer.pulseWidth_raw(perioada * volum / 200);  // volum 100% = umplere 50%
+}
+
+void liniste() {
+  buzzer.pulseWidth_raw(0);
+}
+
+void afiseaza(bool sunet, float f, int volum) {
+  char rand1[17], rand2[17];
+
+  if (sunet) {
+    int midi = notaMidi(f);
+    char nota[5];
+    snprintf(nota, sizeof(nota), "%s%d", NUME_NOTE[midi % 12], midi / 12 - 1);
+    snprintf(rand1, sizeof(rand1), "Nota: %-3s %4uHz", nota, (unsigned)lroundf(f));
+  } else {
+    snprintf(rand1, sizeof(rand1), "Nota: ---       ");
+  }
+  snprintf(rand2, sizeof(rand2), "Vol:%3d%%    %s", volum, modNote ? "NOTE" : "CONT");
+
+  lcd.setCursor(0, 0);
+  lcd.print(rand1);
+  lcd.setCursor(0, 1);
+  lcd.print(rand2);
+}
+
+void setup() {
+  pinMode(TRIG_STANGA, OUTPUT);
+  pinMode(ECHO_STANGA, INPUT);
+  pinMode(TRIG_DREAPTA, OUTPUT);
+  pinMode(ECHO_DREAPTA, INPUT);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.print("Theremin SIO");
+  delay(1000);
+  lcd.clear();
+
+  buzzer.begin(F_REFERINTA, 0.0);
+  // Perioada aleasa (in pasi) inmultita cu frecventa ne da viteza timerului
+  ceasTimer = buzzer.get_timer()->get_period_raw() * F_REFERINTA;
+}
+
+void loop() {
+  float dStanga = citesteDistanta(TRIG_STANGA, ECHO_STANGA);
+  delay(30);  // pauza intre senzori, ca unul sa nu prinda ecoul celuilalt
+  float dDreapta = citesteDistanta(TRIG_DREAPTA, ECHO_DREAPTA);
+
+  bool manaStanga = dStanga > 0 && dStanga <= D_MAX;
+  int volum = distantaInVolum(dDreapta);
+
+  // Filtru simplu: fiecare masuratoare noua conteaza 30%, ca sunetul sa nu tremure
+  if (manaStanga) {
+    dStangaFiltrat = (dStangaFiltrat < 0) ? dStanga : 0.7 * dStangaFiltrat + 0.3 * dStanga;
+  } else {
+    dStangaFiltrat = -1;
+  }
+
+  float f = 0;
+  bool sunet = manaStanga && volum > 0;
+
+  if (sunet) {
+    f = distantaInFrecventa(dStangaFiltrat);
+    if (modNote) f = frecventaNotei(notaMidi(f));
+    canta(f, volum);
+  } else {
+    liniste();
+  }
+
+  // Scrierea pe LCD prin I2C dureaza, asa ca il actualizam doar de cateva ori pe secunda
+  if (millis() - ultimaAfisare >= 150) {
+    ultimaAfisare = millis();
+    afiseaza(sunet, f, volum);
+  }
+}
