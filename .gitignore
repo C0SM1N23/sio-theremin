@@ -38,3 +38,5 @@ PINOUT.md
 *.out
 *.toc
 *.synctex.gz
+
+compile_commands.json
