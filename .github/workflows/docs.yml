@@ -1,0 +1,35 @@
+name: LaTeX Docs CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+
+jobs:
+  build-pdf:
+    name: Compile LaTeX PDFs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile LaTeX guides
+        uses: xu-cheng/latex-action@v3
+        with:
+          root_file: |
+            docs/lab_guide/indrumar_laborator.tex
+          # Uncomment once created:
+          # docs/proposal/propunere_proiect.tex
+          # docs/final_report/documentatie_finala.tex
+
+      - name: Upload compiled PDFs
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-pdfs
+          path: docs/**/*.pdf

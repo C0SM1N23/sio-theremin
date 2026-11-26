@@ -1,0 +1,47 @@
+name: Build Firmware & LaTeX Docs
+
+on:
+  push:
+    branches: [main, "dev-*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-firmware:
+    name: PlatformIO Build (UNO R4 WiFi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO & Compile
+        run: |
+          pip install -U platformio
+          pio run
+
+  build-docs:
+    name: Compile LaTeX Documents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile LaTeX guides
+        uses: xu-cheng/latex-action@v3
+        with:
+          root_file: |
+            docs/lab_guide/indrumar_laborator.tex
+          # Uncomment these once you create the .tex files:
+          # docs/proposal/propunere_proiect.tex
+          # docs/final_report/documentatie_finala.tex
